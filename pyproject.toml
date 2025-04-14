@@ -13,6 +13,7 @@ dependencies = [
     "sympy>=1.13.3",
     "ipykernel>=6.29.5",
     "pre-commit>=4.2.0",
+    "modern-robotics>=1.1.1",
 ]
 
 # uv configuration

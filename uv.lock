@@ -693,6 +693,18 @@ wheels = [
 ]
 
 [[package]]
+name = "modern-robotics"
+version = "1.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/94/14/f41d2608b0ee28c49a9a2a928242495b8b79848d57826d6a387c9204ff43/modern_robotics-1.1.1.tar.gz", hash = "sha256:76227293e674fbd307ffc3b1d49d594839c0fe83f3bb594ec3b58cf584a2a0ea", size = 15176 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/d7/5642b72cfc97b33722ac436e7a88ba21d1555650975e56cf2e03beb60a3d/modern_robotics-1.1.1-py3-none-any.whl", hash = "sha256:f2d41f20f0a50cb00e74cc646bf7548bea8c7d5e5628b9c0614c407e691d0754", size = 15186 },
+]
+
+[[package]]
 name = "mpmath"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
@@ -752,6 +764,7 @@ dependencies = [
     { name = "casadi" },
     { name = "ipykernel" },
     { name = "matplotlib" },
+    { name = "modern-robotics" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pre-commit" },
@@ -778,6 +791,7 @@ requires-dist = [
     { name = "casadi" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "matplotlib" },
+    { name = "modern-robotics", specifier = ">=1.1.1" },
     { name = "numpy", specifier = "==2.2" },
     { name = "pandas" },
     { name = "pre-commit", specifier = ">=4.2.0" },
