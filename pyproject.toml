@@ -1,0 +1,139 @@
+[project]
+name = "nextpredco"
+version = "0.0.0"
+description = "The NEXT PREDictive Control and Optimization framework"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy==2.2",
+    "casadi",
+    "pandas",
+    "pyside6",
+    "matplotlib",
+    "sympy>=1.13.3",
+    "ipykernel>=6.29.5",
+    "pre-commit>=4.2.0",
+]
+
+# uv configuration
+[tool.uv]
+managed = true
+default-groups = ["dev", "docs"]
+
+[dependency-groups]
+dev = [
+  "pytest",
+  "pytest-cov",
+  "pytest-xdist",
+  "ruff",
+  "pandas-stubs",
+  "pre-commit",
+  "PySide6-stubs",
+  "bpython",
+  "pytest-cov",
+  "npt-promote",
+  "rich",
+  # "ipykernel",
+]
+
+docs = []
+
+[tool.mypy]
+disable_error_code = ["import-untyped", 'union-attr', 'annotation-unchecked']
+plugins = ['numpy.typing.mypy_plugin', 'npt_promote']
+
+[tool.ruff]
+# Set the maximum line length to 79.
+line-length = 79
+exclude = ["scripts/try_dompc/CSTR.ipynb"]
+[tool.ruff.lint]
+ignore = [
+  'E501',
+  'COM812',
+  'W191',    # Indentation contains tabs
+  "I001",    # isort
+  "F841",    # Missing type annotation for self
+  "B007",    # Unused variable
+  "F842",
+  "W293",    # Blank line contains whitespace
+  "PERF102", # incorrect dict iterator
+  'PLC0414',
+  "F401",    # Unused import
+  #   'B006', # Learn Python yo!
+  #   'C408',  # Unnecessary dict/list call
+  #   'COM819',  # Trailing commas is da bomb
+  #   'E731',  # Do not assign to lambda
+  'ERA001',
+  'T201',
+  'T203',   # comment code, prints are lax during development
+  #   'G004', # Logging format string should not use f-string
+  #   'RET503', # No explicit return None (all the other rules are about removing unnecessary things like this)
+  #   'RUF012', # Mutable class attributes should be annotated with typing.ClassVar
+  #   'S311', # Standard pseudo-random generators are not suitable for security/cryptographic purposes
+  #   'SIM108', # don't like ternary operator
+  #   'SIM300', # Yoda is wiser than you!
+  #   'TRY003',  # Avoid long messages outside of exception class
+  #   #'TRY004',  # Use TypeError instead of ValueError
+  #   'TRY301',  # Abstract raise garbage,
+  'S603', # subprocess-without-shell-equals-true
+]
+
+
+select = [
+  'A', # flake8-builtins
+  #   'ASYNC', # https://docs.astral.sh/ruff/rules/#flake8-async-async
+  'B',    # flake8-bugbear
+  'BLE',  # flake8-blind-except
+  'C4',   # unnecessary comprehensions, map()
+  'COM',  # flake8-commas
+  'DTZ',  # flake8-datetimez
+  'E',    # pycodestyle
+  'ERA',  # No commented out code
+  'EXE',  # flake8-executable
+  'F',    # pyflakes
+  'FLY',  # flynt
+  'G',    # flake8-logging-format
+  'I',    # isort
+  'ICN',  # https://github.com/joaopalmeiro/flake8-import-conventions
+  'ISC',  # https://pypi.org/project/flake8-implicit-str-concat/
+  'LOG',  # flake8-logging
+  'PERF', # perflint
+  'PIE',  # https://pypi.org/project/flake8-pie/
+  'PLC',  # Pylint conventions
+  'PLE',  # Pylint error
+  'PLW',  # Pylint warnings
+  'PT',   # https://pypi.org/project/flake8-pytest-style/
+  'PTH',  # flake8 use pathlib
+  'RET',  # https://pypi.org/project/flake8-return/
+  'RUF',  # Ruff rules
+  'S',    # https://docs.astral.sh/ruff/rules/#flake8-bandit-s
+  'SIM',  # https://pypi.org/project/flake8-simplify/
+  'T',    # flake8-debugger
+  'TRY',  # tryceratops
+  'UP',   # pyupgrade
+  'W',    # pycodestyle
+  # 'ARG',  # flake8 unused arguments (not really helpful, unused func args are common and ok)
+  #'D',  # pydocstyle (too much)
+  #'N',  # pep8-naming (too opinionated)
+  #'NPY', # numpy
+  #'PD', # pandas
+  #'PL',  # Full Pylint (too much)
+  #'PLR',  # Pylint refactor (too much/too opinionated)
+]
+
+fixable = ["ALL"]
+
+
+[tool.ruff.format]
+quote-style = "single"
+indent-style = "space"
+docstring-code-format = true
+docstring-code-line-length = 20
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[tool.ruff.lint.flake8-implicit-str-concat]
+allow-multiline = true
+
+# [tool.black]
+# line-length = 79
