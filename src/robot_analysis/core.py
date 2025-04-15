@@ -19,7 +19,7 @@ def compute_screw_axes(w, p):
     for i in range(len(w)):
         w_ = w[i][:, 0]
         p_ = p[i][:, 0]
-        v_ = -np.cross(w_, p_)
+        v_ = np.cross(p_, w_) if np.linalg.norm(w_) > 1e-09 else p_
         Slist.append([w_[0], w_[1], w_[2], v_[0], v_[1], v_[2]])
     return np.transpose(Slist)
 
@@ -167,13 +167,13 @@ def load_joints_from_csv(
             axis = np.array(literal_eval(row['axis']), dtype=float).reshape(
                 3, 1
             )
-            joint_type = row.get('type', 'fixed')
+            joint_type = row['type']
             effort = float(row.get('effort', 0.0))
             lower = float(row.get('lower', 0.0))
             upper = float(row.get('upper', 0.0))
             velocity = float(row.get('velocity', 0.0))
-
             origin = Origin(rpy=rpy, xyz=xyz)
+
             joint = Joint(
                 name=name,
                 parent=parent,
@@ -290,10 +290,13 @@ class Robot:
 
                 rot_0i, trans_0i = decompose_transform(mat_m0i)
 
-                w = np.array(rot_0i @ np.array(joint.axis))
-
-                p_list.append(trans_0i.copy())
-                w_list.append(w.copy())
+                if joint.type == 'prismatic':
+                    w_list.append(np.zeros((3, 1)))
+                    p_list.append(joint.axis)
+                else:
+                    w = np.array(rot_0i @ np.array(joint.axis))
+                    p_list.append(trans_0i.copy())
+                    w_list.append(w.copy())
 
                 g = np.eye(6)
                 g[0:3, 0:3] = child_link.inertia.matrix
@@ -339,14 +342,67 @@ class Robot:
         self.Blist = b_arr
 
 
-if __name__ == '__main__':
-    # print(f'ixx = {ixx}')
-
+def test_r_planar():
     info_path = Path(__file__).parent.parent.parent / 'examples/r_planar'
-
     robot = Robot()
     robot.create_from_csv(info_path)
-    robot.forward_kinematic()
+
+    n_max = 100
+    h = 0.1
+    robot_dof = 1
+    theta_full = np.zeros((robot_dof, n_max))
+
+    for i in range(n_max):
+        thetalist = theta_full[:, i]
+        dthetalist = (theta_full[:, i] - theta_full[:, i - 1]) / h
+        ddthetalist = (
+            theta_full[:, i] - 2 * theta_full[:, i - 1] + theta_full[:, i - 2]
+        ) / h**2
+
+        taulist = mr.InverseDynamics(
+            thetalist=thetalist,
+            dthetalist=dthetalist,
+            ddthetalist=ddthetalist,
+            g=np.array([0, -9.81, 0]),
+            Ftip=np.array([0, 0, 0, 0, 0, 0]),
+            Mlist=robot.Mlist,
+            Glist=robot.Glist,
+            Slist=robot.Slist,
+        )
+
+        # m = mr.MassMatrix(
+        #     thetalist=thetalist,
+        #     Mlist=robot.Mlist,
+        #     Glist=robot.Glist,
+        #     Slist=robot.Slist,
+        # )
+
+        # c = mr.VelQuadraticForces(
+        #     thetalist=thetalist,
+        #     dthetalist=dthetalist,
+        #     Mlist=robot.Mlist,
+        #     Glist=robot.Glist,
+        #     Slist=robot.Slist,
+        # )
+
+        # g = mr.GravityForces(
+        #     thetalist=thetalist,
+        #     g=np.array([0, -9.81, 0]),
+        #     Mlist=robot.Mlist,
+        #     Glist=robot.Glist,
+        #     Slist=robot.Slist,
+        # )
+        print(f'taulist = {taulist}')
+
+
+if __name__ == '__main__':
+    # print(f'ixx = {ixx}')
+    test_r_planar()
+    # info_path = Path(__file__).parent.parent.parent / 'examples/rpr_planar'
+
+    # robot = Robot()
+    # robot.create_from_csv(info_path)
+    # robot.forward_kinematic()
     # data = {
     #     'world_joint': {
     #         'rpy': np.array([[0.0], [0.0], [0.0]]),

@@ -13,7 +13,10 @@ dependencies = [
     "sympy>=1.13.3",
     "ipykernel>=6.29.5",
     "pre-commit>=4.2.0",
+    # "modern-robotics>=1.1.1",
     "modern-robotics>=1.1.1",
+    "scipy>=1.15.2",
+    "scipy-stubs>=1.15.2.2",
 ]
 
 # uv configuration
@@ -49,6 +52,7 @@ line-length = 79
 exclude = ["scripts/try_dompc/CSTR.ipynb"]
 [tool.ruff.lint]
 ignore = [
+  'E741', #Ambigouus name
   'E501',
   'COM812',
   'W191',    # Indentation contains tabs
