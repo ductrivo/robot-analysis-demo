@@ -24,7 +24,7 @@ class PlanarRobotNR:
     def __init__(
         self,
         links: dict[str, list[float]],
-        n_max: float = 5,
+        n_max: float = 300,
         t_step: float = 0.01,
     ) -> None:
         self.t_step = t_step
@@ -217,15 +217,6 @@ class PlanarRobotNR:
             'u_log': u_log,
             'tau_log': tau_log,
         }
-        # Lưu kết quả
-        ratio = 1
-        return animate_all_dynamics(
-            t_vals=t_vals[::ratio],
-            xC_log=xC_log[::ratio],
-            yC_log=yC_log[::ratio],
-            x_log=state_log[::ratio],
-            tau_log=tau_log[::ratio],  # nếu tau cố định
-        )
 
     def compute_x_u_v(self, q, l, t):
         """
@@ -487,13 +478,16 @@ class PlanarRobotNR:
         return np.concatenate([dq, ddq]), xC_val, yC_val
 
 
-def animate_all_dynamics(
+def animate_all(
     t_vals,
     xC_log,
     yC_log,
     x_log,
     u_log,
     tau_log,
+    theta_d,
+    tau_max,
+    error,
     interval=5,
     save_path=None,
 ):
@@ -505,14 +499,17 @@ def animate_all_dynamics(
         nrows=3,
         width_ratios=[1.0, 1.0],
         height_ratios=[1.0, 1.0, 1.0],
+        hspace=0.5,
     )
 
     # --- Subplot 1: Forward Kinematics
     ax0 = fig.add_subplot(spec[:, 0])
-    ax0.set_xlim(np.min(xC_log) - 0.5, np.max(xC_log) + 0.5)
-    ax0.set_ylim(np.min(yC_log) - 0.5, np.max(yC_log) + 0.5)
+    ax0.set_xlim(-1.5, 1.5)
+    ax0.set_ylim(-1.5, 1.5)
     ax0.set_aspect('equal')
-    ax0.set_title('Forward Kinematics')
+    ax0.set_title(
+        f'Trajectory\nτ_max={tau_max}, steady state error={error[0]:.1f}%'
+    )
     ax0.set_xlabel('x [m]')
     ax0.set_ylabel('y [m]')
     ax0.grid(True)
@@ -524,26 +521,31 @@ def animate_all_dynamics(
     # --- Subplot 2: Joint states x
     ax1 = fig.add_subplot(spec[0, 1])
     ax1.set_title('Joint States')
-    ax1.set_ylabel('x / dq')
+    ax1.set_ylabel('theta')
     ax1.grid(True)
+    ax1.axhline(y=theta_d, color='red', linestyle='--', label='Set point')
+
+    n_joints = x_log.shape[1] // 2
     x_state_lines = [
-        ax1.plot([], [], label=f'x{i + 1}')[0] for i in range(x_log.shape[1])
+        ax1.plot([], [], label=f'x{i + 1}')[0] for i in range(n_joints)
     ]
     ax1.legend()
     ax1.set_xlim(0, t_vals[-1])
-    ax1.set_ylim(-2 * np.pi, 2 * np.pi)
+    y_lim = theta_d * 1.5
+    ax1.set_ylim(-y_lim, y_lim)
 
     # --- Subplot 3: Control
-    ax2 = fig.add_subplot(spec[1, 1])
-    ax2.set_title('Control inputs')
-    ax2.set_ylabel('Control inputs')
+    ax2 = fig.add_subplot(spec[1, 1], sharex=ax1)
+    ax2.set_title('Control input')
+    ax2.set_ylabel('theta_dot')
     ax2.grid(True)
     u_state_lines = [
         ax2.plot([], [], label=f'u{i + 1}')[0] for i in range(u_log.shape[1])
     ]
     ax2.legend()
     ax2.set_xlim(0, t_vals[-1])
-    ax2.set_ylim(-2 * np.pi, 2 * np.pi)
+    u_lim = np.max(np.abs(u_log)) * 1.1
+    ax2.set_ylim(-u_lim, u_lim)
 
     # --- Subplot 4: Torques τ
     ax3 = fig.add_subplot(spec[2, 1], sharex=ax1)
@@ -556,9 +558,11 @@ def animate_all_dynamics(
     ]
     ax3.legend()
     ax3.set_xlim(0, t_vals[-1])
-    ax3.set_ylim(-20, 20)
+    tau_lim = np.max(np.abs(tau_log)) * 1.1
+    ax3.set_ylim(-tau_lim, tau_lim)
 
-    x_state_hist = [[] for _ in range(x_log.shape[1])]
+    # History logs
+    x_state_hist = [[] for _ in range(n_joints)]
     u_state_hist = [[] for _ in range(u_log.shape[1])]
     tau_hist = [[] for _ in range(tau_log.shape[1])]
 
@@ -570,7 +574,7 @@ def animate_all_dynamics(
             link_line,
             *traj_lines,
             *x_state_lines,
-            *x_state_lines,
+            *u_state_lines,
             *tau_lines,
         ]
 
@@ -585,16 +589,14 @@ def animate_all_dynamics(
             traj_y[i].append(yC_log[frame, i])
             traj_lines[i].set_data(traj_x[i], traj_y[i])
 
-        # x states
-        for i in range(x_log.shape[1]):
+        for i in range(n_joints):
             x_state_hist[i].append(x_log[frame, i])
             x_state_lines[i].set_data(t_vals[: frame + 1], x_state_hist[i])
 
-        # u states
         for i in range(u_log.shape[1]):
             u_state_hist[i].append(u_log[frame, i])
             u_state_lines[i].set_data(t_vals[: frame + 1], u_state_hist[i])
-        # torques
+
         for i in range(tau_log.shape[1]):
             tau_hist[i].append(tau_log[frame, i])
             tau_lines[i].set_data(t_vals[: frame + 1], tau_hist[i])
@@ -621,13 +623,16 @@ def animate_all_dynamics(
     return HTML(ani.to_jshtml())
 
 
-def plot_final_kinematics(
+def plot_final(
     t_vals,
     xC_log,
     yC_log,
     x_log,
     u_log,
     tau_log,
+    theta_d,
+    tau_max,
+    error,
     save_path=None,
 ):
     T, n = xC_log.shape
@@ -637,6 +642,7 @@ def plot_final_kinematics(
     spec = gridspec.GridSpec(
         ncols=2,
         nrows=3,
+        hspace=0.5,
         width_ratios=[1.0, 1.0],
         height_ratios=[1.0, 1.0, 1.0],
     )
@@ -646,7 +652,9 @@ def plot_final_kinematics(
     ax0.set_xlim(-1.5, 1.5)
     ax0.set_ylim(-1.5, 1.5)
     ax0.set_aspect('equal')
-    ax0.set_title('Forward Kinematics (Final State)')
+    ax0.set_title(
+        f'Trajectory\nτ_max={tau_max}, steady state error={error[0]:.1f}%'
+    )
     ax0.set_xlabel('x [m]')
     ax0.set_ylabel('y [m]')
     ax0.grid(True)
@@ -660,27 +668,35 @@ def plot_final_kinematics(
     for i in range(n):
         ax0.plot(xC_log[:T, i], yC_log[:T, i], '-', lw=1)
 
+    # ax0.plot(
+    #     [0.0, np.cos(theta_d)],
+    #     [0.0, np.sin(theta_d)],
+    #     color='red',
+    #     linestyle='--',
+    #     label='Set point',
+    # )
     # --- Subplot 2: Joint states x
     ax1 = fig.add_subplot(spec[0, 1])
     ax1.set_title('Joint States')
-    ax1.set_ylabel('x / dq')
+    ax1.set_ylabel('theta')
     ax1.grid(True)
+    ax1.axhline(y=theta_d, color='red', linestyle='--', label='Set point')
 
     n = x_log.shape[1] // 2
     for i in range(x_log.shape[1]):
         if i < n:
-            ax1.plot(t_vals, x_log[:, i], label=f'theta{i + 1}')
+            ax1.plot(t_vals, x_log[:, i])
     ax1.legend()
     ax1.set_xlim(0, t_vals[-1])
 
-    y_lim = np.max(np.abs(x_log[:, :n])) * 1.1
+    y_lim = theta_d * 1.5
     ax1.set_ylim(-y_lim, y_lim)
 
     # --- Subplot 3: Control
     ax2 = fig.add_subplot(spec[1, 1], sharex=ax1)
     ax2.set_title('Control input')
-    ax2.set_xlabel('Time [s]')
-    ax2.set_ylabel('Control input [Nm]')
+    # ax2.set_xlabel('Time [s]')
+    ax2.set_ylabel('theta_dot')
     ax2.grid(True)
     for i in range(u_log.shape[1]):
         ax2.plot(t_vals, u_log[:, i], label=f'u{i + 1}')
@@ -700,7 +716,8 @@ def plot_final_kinematics(
     ax3.legend()
     ax3.set_xlim(0, t_vals[-1])
     y_lim = np.max(np.abs(tau_log)) * 1.1
-    ax3.set_ylim(-y_lim, y_lim)
+    y_min = np.min(tau_log) * 1.1
+    ax3.set_ylim(-y_min, y_lim)
 
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
