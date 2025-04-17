@@ -30,6 +30,14 @@ class PlanarRobotNR:
         self.t_step = t_step
         self.n_max = n_max
         self.links = links
+
+        lengths = {len(v) for v in self.links.values()}
+        if len(lengths) != 1:
+            msg = 'Inconsistent lengths for link parameters.'
+            raise ValueError(msg)
+
+        self.n_links = len(self.links['l'])
+
         (
             self.eqs_sym,
             self.q_sym,
@@ -91,6 +99,12 @@ class PlanarRobotNR:
             self.dq_sym,
             self.ddq_sym,
             self.mlb_sym,
+        )
+
+        print(
+            f'Created robot with {self.n_links} link(s).'
+            f'\nKinematics: End effector positions are:\n\txC={self.xC_sym}\n\ty_C={self.yC_sym}'
+            f'\nDynamics: M, C, G matrices are:\n\tM={self.M_sym}\n\tC={self.C_sym}\n\tG={self.G_sym}'
         )
 
     def simulate(self, x0, **kwargs):
