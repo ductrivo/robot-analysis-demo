@@ -1,14 +1,14 @@
 [project]
-name = "nextpredco"
+name = "robot_analysis"
 version = "0.0.0"
 description = "The NEXT PREDictive Control and Optimization framework"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "numpy==2.2",
-    "casadi",
-    "pandas",
-    "pyside6",
+    # "casadi",
+    # "pandas",
+    # "pyside6",
     "matplotlib",
     "sympy>=1.13.3",
     "ipykernel>=6.29.5",
