@@ -183,3 +183,5 @@ control/*
 
 # Ignore Zone.Identifier files
 *.csv:Zone.Identifier
+
+src/robot_analysis/core.py

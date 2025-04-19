@@ -6,30 +6,41 @@ from numpy.typing import NDArray
 
 
 class ControllerABC(ABC):
-    def __init__(self, setpoint: NDArray, t_step: float):
+    def __init__(self, setpoint: NDArray, t_step: float, u_name: str = ''):
         self._setpoint = setpoint
         self._t_step = t_step
         self._n_setpoint = setpoint.shape[0]
+        self._u_name = u_name
+        self._u: NDArray
+
+    @property
+    def u(self) -> NDArray:
+        return self._u
+
+    @property
+    def u_name(self) -> str:
+        return self._u_name
 
     @abstractmethod
-    def make_step(self, output: NDArray):
+    def make_step(self, y: NDArray):
         pass
 
 
-class PID(ControllerABC):
+class FeedforwardPID(ControllerABC):
     def __init__(
         self,
         setpoint: NDArray,
         t_step: float,
-        u_desired: NDArray,
+        feedforward_term: NDArray | None = None,
         kP: NDArray | None = None,
         kI: NDArray | None = None,
         kD: NDArray | None = None,
         eI_max: NDArray | None = None,
         u_max: NDArray | None = None,
+        u_name: str = '',
     ):
-        super().__init__(setpoint, t_step)
-        self._u_desired = u_desired
+        super().__init__(setpoint, t_step, u_name)
+        self._feedforward = feedforward_term
         self._kP = kP
         self._kI = kI
         self._kD = kD
@@ -40,11 +51,14 @@ class PID(ControllerABC):
         self._error_prev = -setpoint
 
     @override
-    def make_step(self, output: NDArray):
-        self._u = self._u_desired
+    def make_step(self, y: NDArray):
+        if self._feedforward is not None:
+            self._u = self._feedforward
+        else:
+            self._u = np.zeros(self._setpoint.shape)
 
         if self._kP is not None:
-            error = self._setpoint - output
+            error = self._setpoint - y
             self._u += self._kP * error
 
         if self._kI is not None:
@@ -60,13 +74,15 @@ class PID(ControllerABC):
         if self._u_max is not None:
             self._u = np.clip(self._u, -self._u_max, self._u_max)
 
+        return self._u
 
-class VelocityPID(PID):
+
+class ComputedTorque(FeedforwardPID):
     def __init__(
         self,
         setpoint,
         t_step,
-        u_desired,
+        feedforward_term=None,
         kP=None,
         kI=None,
         kD=None,
@@ -76,14 +92,16 @@ class VelocityPID(PID):
         super().__init__(
             setpoint,
             t_step,
-            u_desired,
+            feedforward_term,
             kP,
             kI,
             kD,
             eI_max,
             u_max,
+            u_name='torque',
         )
+        self.M: NDArray
 
-    @override
-    def make_step(self, output):
-        return super().make_step(output)
+    def make_step(self, y):
+        # Kp*theta_e + Ki*eI + Kd*dtheta_e
+        pid_term = super().make_step(y)

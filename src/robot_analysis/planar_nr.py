@@ -1,4 +1,3 @@
-import casadi as ca
 import matplotlib.animation as animation
 import numpy as np
 import sympy as sp
@@ -6,37 +5,48 @@ from IPython.display import HTML
 from matplotlib import gridspec
 from matplotlib import pyplot as plt
 from numpy.typing import NDArray
-from scipy.integrate import solve_ivp
 from sympy import (
-    Eq,
     ImmutableDenseMatrix,
     Matrix,
-    Symbol,
     lambdify,
     simplify,
     symbols,
 )
 
+from robot_analysis.controller import FeedforwardPID
+
 G = 9.81
+
+
+class SimData:
+    def __init__(self, n_links: int, n_max: int):
+        self.t_full = np.zeros((1, n_max + 1))
+        self.x_full = np.zeros((n_links * 2, n_max + 1))
+        self.u_full = np.zeros((n_links, n_max + 1))
+        self.tau_full = np.zeros((n_links, n_max + 1))
+        self.pos_x_full = np.zeros((n_links, n_max + 1))
+        self.pos_y_full = np.zeros((n_links, n_max + 1))
 
 
 class PlanarRobotNR:
     def __init__(
         self,
         links: dict[str, list[float]],
-        n_max: float = 300,
+        n_max: int = 500,
         t_step: float = 0.01,
     ) -> None:
-        self.t_step = t_step
-        self.n_max = n_max
+        self._t_step = t_step
+        self._n_max = n_max
         self.links = links
+        self.tau_max = np.array(links['tau_max']).reshape((-1, 1))
+        self._k: int = 0
 
         lengths = {len(v) for v in self.links.values()}
         if len(lengths) != 1:
             msg = 'Inconsistent lengths for link parameters.'
             raise ValueError(msg)
 
-        self.n_links = len(self.links['l'])
+        self._n_links = len(self.links['l'])
 
         (
             self.eqs_sym,
@@ -71,17 +81,17 @@ class PlanarRobotNR:
             self.yC_sym,
             modules='numpy',
         )
-        self.M_func = lambdify(
+        self.m_mat_func = lambdify(
             self.q_sym + self.mlb_sym,
             self.M_sym,
             modules='numpy',
         )
-        self.C_func = lambdify(
+        self.c_mat_func = lambdify(
             self.dq_sym + self.q_sym + self.mlb_sym,
             self.C_sym,
             modules='numpy',
         )
-        self.G_func = lambdify(
+        self.g_mat_func = lambdify(
             self.q_sym + self.mlb_sym,
             self.G_sym,
             modules='numpy',
@@ -101,13 +111,118 @@ class PlanarRobotNR:
             self.mlb_sym,
         )
 
+        self.data = SimData(n_links=self._n_links, n_max=self._n_max)
+
         print(
-            f'Created robot with {self.n_links} link(s).'
+            f'Created robot with {self._n_links} link(s).'
             f'\nKinematics: End effector positions are:\n\txC={self.xC_sym}\n\ty_C={self.yC_sym}'
             f'\nDynamics: M, C, G matrices are:\n\tM={self.M_sym}\n\tC={self.C_sym}\n\tG={self.G_sym}'
         )
 
-    def simulate(self, x0, **kwargs):
+    @property
+    def n_links(self) -> int:
+        return self._n_links
+
+    @property
+    def t_step(self) -> float:
+        return self._t_step
+
+    @property
+    def x(self) -> NDArray:
+        return self.data.x_full[:, self._k, None]
+
+    @x.setter
+    def x(self, val: NDArray) -> None:
+        self.data.x_full[:, self._k, None] = val
+
+    @property
+    def x_prev(self) -> NDArray:
+        if self._k == 0:
+            return np.zeros((self._n_links * 2, 1))
+        return self.data.x_full[:, self._k - 1, None]
+
+    @property
+    def q(self) -> NDArray:
+        return self.data.x_full[: self._n_links, self._k, None]
+
+    @q.setter
+    def q(self, val: NDArray) -> None:
+        self.data.x_full[: self._n_links, self._k, None] = val
+
+    @property
+    def dq(self) -> NDArray:
+        return self.data.x_full[self._n_links :, self._k, None]
+
+    @dq.setter
+    def dq(self, val: NDArray) -> None:
+        self.data.x_full[self._n_links :, self._k, None] = val
+
+    @property
+    def dq_prev(self) -> NDArray:
+        if self._k == 0:
+            return np.zeros((self._n_links, 1))
+        return self.data.x_full[self._n_links :, self._k - 1, None]
+
+    @property
+    def params(self):
+        return (
+            *self.q.flatten(),
+            *self.links['l'],
+            *self.links['m'],
+            *self.links['b'],
+        )
+
+    @property
+    def pos_x(self):
+        return self.data.pos_x_full[:, self._k, None]
+
+    @pos_x.setter
+    def pos_x(self, val: NDArray):
+        self.data.pos_x_full[:, self._k, None] = val
+
+    @property
+    def pos_y(self):
+        return self.data.pos_y_full[:, self._k, None]
+
+    @pos_y.setter
+    def pos_y(self, val: NDArray):
+        self.data.pos_y_full[:, self._k, None] = val
+
+    @property
+    def u(self) -> NDArray:
+        return self.data.u_full[:, self._k, None]
+
+    @u.setter
+    def u(self, val: NDArray):
+        self.data.u_full[:, self._k, None] = val
+
+    @property
+    def tau(self) -> NDArray:
+        return self.data.tau_full[:, self._k, None]
+
+    @tau.setter
+    def tau(self, val: NDArray):
+        self.data.tau_full[:, self._k, None] = val
+
+    @property
+    def m_mat(self):
+        return self.m_mat_func(*self.params)
+
+    @property
+    def c_mat(self):
+        return self.c_mat_func(
+            *self.q.flatten(),
+            *self.dq.flatten(),
+            *self.links['m'],
+            *self.links['l'],
+            *self.links['b'],
+        )
+
+    @property
+    def g_mat(self):
+        return self.g_mat_func(*self.params)
+
+    def simulate(self, controller: FeedforwardPID):
         """
         Simulate the dynamics over time using constant torque input.
 
@@ -117,120 +232,48 @@ class PlanarRobotNR:
             tau : np.ndarray
                 Constant torque vector [tau1, ..., taun]
         """
-        n = len(x0) // 2
-        t_vals = np.arange(0, self.n_max + 1) * self.t_step
-        state_log = np.zeros((len(t_vals), len(x0)))
-        xC_log = np.zeros((len(t_vals), n))
-        yC_log = np.zeros((len(t_vals), n))
-        tau_log = np.zeros((len(t_vals), n))
-        u_log = np.zeros((len(t_vals), n))
 
-        state = np.array(x0, dtype=float)
-        state_log[0, :] = state
+        for k in range(1, self._n_max + 1):
+            if controller.u_name == 'velocity':
+                u = controller.make_step(y=self.q)
+                dq_next = u
+                q_next = self.q + self._t_step * dq_next
+                ddq_next = (dq_next - self.dq) / self._t_step
 
-        dtheta_prev = np.zeros(n)
-        theta_e_prev = np.zeros(n)
-        theta_i = np.zeros(n)
-        for i in range(1, len(t_vals)):
-            l = self.links['l']
-            m = self.links['m']
-            b = self.links['b']
+                params = [
+                    q_next.flatten(),
+                    dq_next.flatten(),
+                    self.links['m'],
+                    self.links['l'],
+                    self.links['b'],
+                ]
+                m_mat = self.compute_m_mat(*params)
+                c_mat = self.compute_c_mat(*params)
+                g_mat = self.compute_g_mat(*params)
+                tau = m_mat @ ddq_next + c_mat + g_mat
 
-            if kwargs['method'] == 'torque_const':
-                tau = kwargs['value']
-                u = tau
+            elif controller.u_name == 'torque':
+                u = controller.make_step(y=self.q)
+                tau = u
 
-            elif kwargs['method'] == 'openloop':
-                t1 = kwargs['t1']
-                t2 = kwargs['t2']
-                tf = kwargs['tf']
-                theta_d = kwargs['theta_d']
-                tau_max = kwargs['tau_max']
-                t = i * self.t_step
+            else:
+                tau = np.zeros((self._n_links, 1))
 
-                vel_d = 2 * theta_d / (tf + t2 - t1)
+            # Need to check if the torque is sufficient
+            tau = np.clip(tau, -self.tau_max, self.tau_max)
 
-                if t <= t1:
-                    u = vel_d / t1 * t
-                elif (t > t1) and (t <= t2):
-                    u = vel_d
-                elif (t > t2) and (t <= tf):
-                    u = vel_d * (tf - t) / (tf - t2)
-                else:
-                    u = theta_d * 0
-
-                # print(
-                #     f't={t}_u={u}_vel_d={vel_d}_ddq={(u - dtheta_prev) / self.t_step}'
-                # )
-                theta = state[:n]
-                tau = self.compute_tau(
-                    q=theta,
-                    dq=u,
-                    ddq=(u - dtheta_prev) / self.t_step,
-                    m=m,
-                    l=l,
-                    b=b,
-                )
-                tau = np.clip(tau, -tau_max, tau_max)
-                dtheta_prev = u
-            elif kwargs['method'] == 'velocity':
-                theta = state[:n]
-                theta_sp = kwargs['theta_sp']
-                vel_d = kwargs['vel_d']
-                kp = kwargs['kp']
-                ki = kwargs['ki']
-                kd = kwargs['kd']
-                tau_max = kwargs['tau_max']
-
-                theta_e = theta_sp - theta
-                u = (
-                    vel_d
-                    + kp * theta_e
-                    + ki * theta_i * self.t_step
-                    + kd * (theta_e - theta_e_prev) / self.t_step
-                )
-
-                theta_e_prev = theta_e
-                theta_i += theta_e
-
-                tau = self.compute_tau(
-                    q=theta,
-                    dq=u,
-                    ddq=(u - dtheta_prev) / self.t_step,
-                    m=m,
-                    l=l,
-                    b=b,
-                )
-                tau = np.clip(tau, -tau_max, tau_max)
-                dtheta_prev = u
-
-            dx, xC, yC = self.dynamics(
-                0,
-                state,
-                tau,
-                m,
-                l,
-                b,
-            )
-            # print(dx)
-
-            state += self.t_step * dx
-            state_log[i, :] = state
-            xC_log[i, :] = xC
-            yC_log[i, :] = yC
-            tau_log[i, :] = tau.flatten()
-            u_log[i, :] = u
+            ddq = np.linalg.pinv(self.m_mat) @ (tau - self.c_mat - self.g_mat)
+            dq = self.dq_prev + self.t_step * ddq
+            # print(f'np.vstack([dq, ddq]) = {np.vstack([dq, ddq])}')
+            self._k = k
+            self.data.t_full[0, self._k] = self._k * self._t_step
+            self.u = u
+            self.tau = tau
+            self.x = self.x_prev + self._t_step * np.vstack([dq, ddq])
+            self.pos_x = self.xC_func(*self.params)
+            self.pos_y = self.yC_func(*self.params)
 
         print('Finished simulation, generating animation...')
-
-        return {
-            't_vals': t_vals,
-            'xC_log': xC_log,
-            'yC_log': yC_log,
-            'x_log': state_log,
-            'u_log': u_log,
-            'tau_log': tau_log,
-        }
 
     def compute_x_u_v(self, q, l, t):
         """
@@ -243,11 +286,11 @@ class PlanarRobotNR:
             t (sympy.Symbol): Time symbol
 
         Returns:
-            x_c (list): x-coordinates of center of mass
-            y_c (list): y-coordinates of center of mass
+            xC (list): x-coordinates of center of mass
+            yC (list): y-coordinates of center of mass
             v_c_sq (list): squared velocities of center of mass
         """
-        x_c, y_c, v_c_sq = [], [], []
+        xC, yC, v_c_sq = [], [], []
         n = len(q)
 
         for i in range(n):
@@ -263,11 +306,11 @@ class PlanarRobotNR:
             vxi = xi.diff(t)
             vyi = yi.diff(t)
 
-            x_c.append(xi)
-            y_c.append(yi)
+            xC.append(xi)
+            yC.append(yi)
             v_c_sq.append(vxi**2 + vyi**2)
 
-        return x_c, y_c, v_c_sq
+        return xC, yC, v_c_sq
 
     def build_model(self):
         n = len(self.links['l'])
@@ -286,19 +329,21 @@ class PlanarRobotNR:
         g = G  # sp.Symbol('g')  # Gravitational acceleration
 
         # Moments of inertia for rods: I_i = (1/12) * m_i * l_i^2
-        I = [1 / 3 * m[i] * l[i] ** 2 for i in range(n)]
+        inertia = [1 / 3 * m[i] * l[i] ** 2 for i in range(n)]
 
         # Center of mass positions and velocities
-        x_c, y_c, v_c_sq = self.compute_x_u_v(q, l, t)
+        xC, yC, v_c_sq = self.compute_x_u_v(q, l, t)
 
         # Kinetic energy (translational + rotational)
         T = sum(
-            0.5 * m[i] * v_c_sq[i]  # + 0.5 * I[i] * sum(dq[: i + 1]) ** 2
+            0.5
+            * m[i]
+            * v_c_sq[i]  # + 0.5 * inertia[i] * sum(dq[: i + 1]) ** 2
             for i in range(n)
         )
 
         # Potential energy
-        V = sum(m[i] * g * y_c[i] for i in range(n))
+        V = sum(m[i] * g * yC[i] for i in range(n))
 
         # Lagrangian
         L = T - V
@@ -323,7 +368,19 @@ class PlanarRobotNR:
 
             eqs.append(eq)
 
-        return eqs, q, dq, ddq, list(l), list(m), list(b), L, tau, x_c, y_c
+        return (
+            eqs,
+            q,
+            dq,
+            ddq,
+            list(l),
+            list(m),
+            list(b),
+            L,
+            tau,
+            Matrix(xC),
+            Matrix(yC),
+        )
 
     def extract_M_C_G(self, eqs, q_sym, dq_sym, ddq_sym):
         """
@@ -452,43 +509,26 @@ class PlanarRobotNR:
 
         return tau_func
 
-    def compute_tau(self, q, dq, ddq, m, l, b):
-        # print(f'q={q}, dq = {dq}')
-        M_val = self.M_func(*q, *m, *l, *b)
-        C_val = self.C_func(*q, *dq, *m, *l, *b)
-        G_val = self.G_func(*q, *m, *l, *b)
+    def compute_m_mat(self, q, dq, m, l, b):
+        return self.m_mat_func(*q, *m, *l, *b)
 
-        # print(f'ddq = {ddq}')
-        # print(C_val)
-        # print(G_val)
-        # print(M_val @ ddq.reshape((-1, 1)))
-        # print(M_val @ ddq.reshape((-1, 1)) + C_val)
+    def compute_c_mat(self, q, dq, m, l, b):
+        return self.c_mat_func(*q, *dq, *m, *l, *b)
 
-        # print(M_val @ ddq.reshape((-1, 1)) + C_val + G_val)
-        return M_val @ ddq.reshape((-1, 1)) + C_val + G_val
+    def compute_g_mat(self, q, dq, m, l, b):
+        return self.g_mat_func(*q, *m, *l, *b)
 
-    def dynamics(self, t, x, tau, m, l, b):
-        n = len(x) // 2
-        q = x[:n]
-        dq = x[n:]
-
-        M_val = self.M_func(*q, *m, *l, *b)
-        C_val = self.C_func(*q, *dq, *m, *l, *b)
-        G_val = self.G_func(*q, *m, *l, *b)
+    def dynamics(self, q, dq, tau, m, l, b):
+        """
+        TODO: Consider to remove
+        """
+        M_val = self.m_mat_func(*q, *m, *l, *b).reshape((-1, 1))
+        C_val = self.c_mat_func(*q, *dq, *m, *l, *b).reshape((-1, 1))
+        G_val = self.g_mat_func(*q, *m, *l, *b).reshape((-1, 1))
         xC_val = self.xC_func(*q, *m, *l, *b)
         yC_val = self.yC_func(*q, *m, *l, *b)
 
-        # print(f'tau = {tau.reshape((n, 1))}')
-        # print(f'dq.reshape((n, 1)) = {dq.reshape((n, 1))}')
-        # print(tau.reshape((n, 1)))
-        # print(tau.reshape((n, 1)) - C_val @ dq.reshape((n, 1)))
-        # print(tau.reshape((n, 1)) - C_val @ dq.reshape((n, 1)) - G_val)
-
-        ddq = (
-            np.linalg.pinv(M_val)
-            @ (tau.reshape((n, 1)) - C_val - G_val).flatten()
-        )
-
+        ddq = np.linalg.pinv(M_val) @ (tau - C_val - G_val)
         return np.concatenate([dq, ddq]), xC_val, yC_val
 
 
@@ -637,21 +677,7 @@ def animate_all(
     return HTML(ani.to_jshtml())
 
 
-def plot_final(
-    t_vals,
-    xC_log,
-    yC_log,
-    x_log,
-    u_log,
-    tau_log,
-    theta_d,
-    tau_max,
-    error,
-    save_path=None,
-):
-    T, n = xC_log.shape
-    final_frame = -1
-
+def plot_ax(robot):
     fig = plt.figure(figsize=(12, 6))
     spec = gridspec.GridSpec(
         ncols=2,
@@ -663,48 +689,24 @@ def plot_final(
 
     # --- Subplot 1: Forward Kinematics
     ax0 = fig.add_subplot(spec[:, 0])
-    ax0.set_xlim(-1.5, 1.5)
-    ax0.set_ylim(-1.5, 1.5)
+    ax0.set_xlim(-2.5, 2.5)
+    ax0.set_ylim(-2.5, 2.5)
     ax0.set_aspect('equal')
-    ax0.set_title(
-        f'Trajectory\nτ_max={tau_max}, steady state error={error[0]:.1f}%'
-    )
+    # ax0.set_title(
+    #     f'Trajectory\nτ_max={robot.tau_max}, steady state error={error[0]:.1f}%'
+    # )
     ax0.set_xlabel('x [m]')
     ax0.set_ylabel('y [m]')
     ax0.grid(True)
 
-    # Plot robot links
-    xs = [0, *list(xC_log[final_frame])]
-    ys = [0, *list(yC_log[final_frame])]
-    ax0.plot(xs, ys, 'o-', color='black', lw=2)
-
-    # Plot trajectory up to final state
-    for i in range(n):
-        ax0.plot(xC_log[:T, i], yC_log[:T, i], '-', lw=1)
-
-    # ax0.plot(
-    #     [0.0, np.cos(theta_d)],
-    #     [0.0, np.sin(theta_d)],
-    #     color='red',
-    #     linestyle='--',
-    #     label='Set point',
-    # )
     # --- Subplot 2: Joint states x
     ax1 = fig.add_subplot(spec[0, 1])
     ax1.set_title('Joint States')
     ax1.set_ylabel('theta')
     ax1.grid(True)
-    ax1.axhline(y=theta_d, color='red', linestyle='--', label='Set point')
-
-    n = x_log.shape[1] // 2
-    for i in range(x_log.shape[1]):
-        if i < n:
-            ax1.plot(t_vals, x_log[:, i])
-    ax1.legend()
-    ax1.set_xlim(0, t_vals[-1])
-
-    y_lim = theta_d * 1.5
-    ax1.set_ylim(-y_lim, y_lim)
+    # ax1.axhline(y=theta_d, color='red', linestyle='--', label='Set point')
+    # ax1.legend()
+    ax1.set_xlim(0, robot.data.t_full[0, -1])
 
     # --- Subplot 3: Control
     ax2 = fig.add_subplot(spec[1, 1], sharex=ax1)
@@ -712,12 +714,9 @@ def plot_final(
     # ax2.set_xlabel('Time [s]')
     ax2.set_ylabel('theta_dot')
     ax2.grid(True)
-    for i in range(u_log.shape[1]):
-        ax2.plot(t_vals, u_log[:, i], label=f'u{i + 1}')
-    ax2.legend()
-    ax2.set_xlim(0, t_vals[-1])
-    y_lim = np.max(np.abs(u_log)) * 1.1
-    ax2.set_ylim(-y_lim, y_lim)
+    ax2.set_xlim(0, robot.data.t_full[0, -1])
+    # y_lim = np.max(np.abs(robot.data.u_full)) * 1.1
+    # ax2.set_ylim(-y_lim, y_lim)
 
     # --- Subplot 4: Torques τ
     ax3 = fig.add_subplot(spec[2, 1], sharex=ax1)
@@ -725,13 +724,55 @@ def plot_final(
     ax3.set_xlabel('Time [s]')
     ax3.set_ylabel('Torque [Nm]')
     ax3.grid(True)
-    for i in range(tau_log.shape[1]):
-        ax3.plot(t_vals, tau_log[:, i], label=f'τ{i + 1}')
+    ax3.set_xlim(0, robot.data.t_full[0, -1])
+    y_lim = np.max(np.abs(robot.data.tau_full)) * 1.1
+    y_min = np.min(robot.data.tau_full) * 1.1
+    # ax3.set_ylim(-y_min, y_lim)
+
+    return fig, ax0, ax1, ax2, ax3
+
+
+def plot_final(
+    robot: PlanarRobotNR,
+    save_path=None,
+):
+    fig, ax0, ax1, ax2, ax3 = plot_ax(robot)
+
+    # Plot robot links
+    xs = [0, *list(robot.data.pos_x_full[:, -1])]
+    ys = [0, *list(robot.data.pos_y_full[:, -1])]
+    ax0.plot(xs, ys, 'o-', color='black', lw=2)
+
+    # Plot trajectory up to final state
+    for i in range(robot.n_links):
+        ax0.plot(
+            robot.data.pos_x_full[i, :],
+            robot.data.pos_y_full[i, :],
+            ':',
+            lw=1,
+        )
+
+    for i in range(robot.n_links):
+        ax1.plot(robot.data.t_full[0, :], robot.data.x_full[i, :])
+
+    # y_lim = theta_d * 1.5
+    # ax1.set_ylim(-y_lim, y_lim)
+
+    for i in range(robot.n_links):
+        ax2.plot(
+            robot.data.t_full[0, :],
+            robot.data.u_full[i, :],
+            label=f'u{i + 1}',
+        )
+    ax2.legend()
+
+    for i in range(robot.n_links):
+        ax3.plot(
+            robot.data.t_full[0, :],
+            robot.data.tau_full[i, :],
+            label=f'τ{i + 1}',
+        )
     ax3.legend()
-    ax3.set_xlim(0, t_vals[-1])
-    y_lim = np.max(np.abs(tau_log)) * 1.1
-    y_min = np.min(tau_log) * 1.1
-    ax3.set_ylim(-y_min, y_lim)
 
     if save_path:
         fig.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -750,12 +791,12 @@ if __name__ == '__main__':
     }
     robot = PlanarRobotNR(links)
 
-    robot.simulate(
-        x0=np.array([0.0] * n_links * 2),
-        method='velocity',
-        theta_sp=np.pi / 3,
-        vel_d=np.pi / 10,
-        kp=1.0,
-        ki=0.0,
-        kd=0.0,
-    )
+    # robot.simulate(
+    #     x0=np.array([0.0] * n_links * 2),
+    #     method='velocity',
+    #     theta_sp=np.pi / 3,
+    #     vel_d=np.pi / 10,
+    #     kp=1.0,
+    #     ki=0.0,
+    #     kd=0.0,
+    # )
