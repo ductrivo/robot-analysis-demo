@@ -1,10 +1,16 @@
+from itertools import product
+from pathlib import Path
+
 import matplotlib.animation as animation
+import matplotlib.image as mpimg
 import numpy as np
 import sympy as sp
 from IPython.display import HTML
 from matplotlib import gridspec
 from matplotlib import pyplot as plt
+from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from numpy.typing import NDArray
+from scipy.ndimage import rotate
 from sympy import (
     ImmutableDenseMatrix,
     Matrix,
@@ -26,6 +32,7 @@ class SimData:
         self.tau_full = np.zeros((n_links, n_max + 1))
         self.pos_x_full = np.zeros((n_links, n_max + 1))
         self.pos_y_full = np.zeros((n_links, n_max + 1))
+        self.q_desired_full = np.zeros((n_links, n_max + 1))
 
 
 class PlanarRobotNR:
@@ -37,16 +44,16 @@ class PlanarRobotNR:
     ) -> None:
         self._t_step = t_step
         self._n_max = n_max
-        self.links = links
+        self._links = links
         self.tau_max = np.array(links['tau_max']).reshape((-1, 1))
         self._k: int = 0
 
-        lengths = {len(v) for v in self.links.values()}
+        lengths = {len(v) for v in self._links.values()}
         if len(lengths) != 1:
             msg = 'Inconsistent lengths for link parameters.'
             raise ValueError(msg)
 
-        self._n_links = len(self.links['l'])
+        self._n_links = len(self._links['l'])
 
         (
             self.eqs_sym,
@@ -58,9 +65,9 @@ class PlanarRobotNR:
             self.b_sym,
             self.L_sym,
             self.tau_sym,
-            self.xC_sym,
-            self.yC_sym,
-        ) = self.build_model()
+            self.pos_x_sym,
+            self.pos_y_sym,
+        ) = self._build_model()
 
         self.M_sym, self.C_sym, self.G_sym = self.extract_M_C_G(
             self.eqs_sym,
@@ -71,14 +78,14 @@ class PlanarRobotNR:
 
         self.mlb_sym = self.m_sym + self.l_sym + self.b_sym
 
-        self.xC_func = lambdify(
+        self.pos_x_func = lambdify(
             self.q_sym + self.mlb_sym,
-            self.xC_sym,
+            self.pos_x_sym,
             modules='numpy',
         )
-        self.yC_func = lambdify(
+        self.pos_y_func = lambdify(
             self.q_sym + self.mlb_sym,
-            self.yC_sym,
+            self.pos_y_sym,
             modules='numpy',
         )
         self.m_mat_func = lambdify(
@@ -113,10 +120,18 @@ class PlanarRobotNR:
 
         self.data = SimData(n_links=self._n_links, n_max=self._n_max)
 
+        subs_dict = {
+            str(l_sym): self._links['l'][i]
+            for i, l_sym in enumerate(self.l_sym)
+        }
+
+        self.pos_x_sym_sub = self.pos_x_sym[-1].subs(subs_dict)
+        self.pos_y_sym_sub = self.pos_y_sym[-1].subs(subs_dict)
+
         print(
             f'Created robot with {self._n_links} link(s).'
-            f'\nKinematics: End effector positions are:\n\txC={self.xC_sym}\n\ty_C={self.yC_sym}'
-            f'\nDynamics: M, C, G matrices are:\n\tM={self.M_sym}\n\tC={self.C_sym}\n\tG={self.G_sym}'
+            f'\nKinematics: End effector positions are:\n\tpos_x = {self.pos_x_sym}\n\tpos_y = {self.pos_y_sym}'
+            f'\nDynamics: M, C, G matrices are:\n\tM = {self.M_sym}\n\tC = {self.C_sym}\n\tG = {self.G_sym}'
         )
 
     @property
@@ -124,8 +139,20 @@ class PlanarRobotNR:
         return self._n_links
 
     @property
+    def links(self) -> dict[str, list[float]]:
+        return self._links
+
+    @property
     def t_step(self) -> float:
         return self._t_step
+
+    @property
+    def t(self) -> float:
+        return self.data.t_full[0, self._k]
+
+    @t.setter
+    def t(self, val: float) -> None:
+        self.data.t_full[0, self._k] = val
 
     @property
     def x(self) -> NDArray:
@@ -164,12 +191,20 @@ class PlanarRobotNR:
         return self.data.x_full[self._n_links :, self._k - 1, None]
 
     @property
+    def q_desired(self) -> NDArray:
+        return self.data.q_desired_full[:, self._k, None]
+
+    @q_desired.setter
+    def q_desired(self, val: NDArray) -> None:
+        self.data.q_desired_full[:, self._k, None] = val
+
+    @property
     def params(self):
         return (
             *self.q.flatten(),
-            *self.links['l'],
-            *self.links['m'],
-            *self.links['b'],
+            *self._links['l'],
+            *self._links['m'],
+            *self._links['b'],
         )
 
     @property
@@ -213,16 +248,19 @@ class PlanarRobotNR:
         return self.c_mat_func(
             *self.q.flatten(),
             *self.dq.flatten(),
-            *self.links['m'],
-            *self.links['l'],
-            *self.links['b'],
+            *self._links['m'],
+            *self._links['l'],
+            *self._links['b'],
         )
 
     @property
     def g_mat(self):
         return self.g_mat_func(*self.params)
 
-    def simulate(self, controller: FeedforwardPID):
+    def generate_trajectory(self, q_final: NDArray):
+        pass
+
+    def simulate(self, q_final: NDArray, controller: FeedforwardPID):
         """
         Simulate the dynamics over time using constant torque input.
 
@@ -235,7 +273,11 @@ class PlanarRobotNR:
 
         for k in range(1, self._n_max + 1):
             if controller.u_name == 'velocity':
-                u = controller.make_step(y=self.q)
+                if k < -100:
+                    self.q_desired = k / 100 * q_final
+                else:
+                    self.q_desired = q_final
+                u = controller.make_step(y=self.q, setpoint=self.q_desired)
                 dq_next = u
                 q_next = self.q + self._t_step * dq_next
                 ddq_next = (dq_next - self.dq) / self._t_step
@@ -243,9 +285,9 @@ class PlanarRobotNR:
                 params = [
                     q_next.flatten(),
                     dq_next.flatten(),
-                    self.links['m'],
-                    self.links['l'],
-                    self.links['b'],
+                    self._links['m'],
+                    self._links['l'],
+                    self._links['b'],
                 ]
                 m_mat = self.compute_m_mat(*params)
                 c_mat = self.compute_c_mat(*params)
@@ -266,16 +308,30 @@ class PlanarRobotNR:
             dq = self.dq_prev + self.t_step * ddq
             # print(f'np.vstack([dq, ddq]) = {np.vstack([dq, ddq])}')
             self._k = k
-            self.data.t_full[0, self._k] = self._k * self._t_step
+            self.t = self._k * self._t_step
             self.u = u
             self.tau = tau
             self.x = self.x_prev + self._t_step * np.vstack([dq, ddq])
-            self.pos_x = self.xC_func(*self.params)
-            self.pos_y = self.yC_func(*self.params)
+            self.pos_x = self.pos_x_func(*self.params)
+            self.pos_y = self.pos_y_func(*self.params)
 
         print('Finished simulation, generating animation...')
 
-    def compute_x_u_v(self, q, l, t):
+    def compute_inversed_kinematics(self, pos_x_d, pos_y_d, guess):
+        sol = sp.nsolve(
+            [
+                sp.Eq(self.pos_x_sym_sub, pos_x_d),
+                sp.Eq(self.pos_y_sym_sub, pos_y_d),
+            ],
+            self.q_sym,
+            guess,
+        )
+
+        return np.mod(np.array(sol, dtype=float), 2 * np.pi)
+
+    def _compute_forward_kinematics(
+        self, q: sp.Symbol, l: sp.Symbol, t: sp.Symbol
+    ):
         """
         Compute the symbolic center of mass positions and squared velocities
         for each link in a planar n-link manipulator.
@@ -286,11 +342,11 @@ class PlanarRobotNR:
             t (sympy.Symbol): Time symbol
 
         Returns:
-            xC (list): x-coordinates of center of mass
-            yC (list): y-coordinates of center of mass
-            v_c_sq (list): squared velocities of center of mass
+            pos_x (list): x-coordinates of center of mass
+            pos_y (list): y-coordinates of center of mass
+            vC_sq (list): squared velocities of center of mass
         """
-        xC, yC, v_c_sq = [], [], []
+        pos_x, pos_y, vC_sq = [], [], []
         n = len(q)
 
         for i in range(n):
@@ -306,14 +362,14 @@ class PlanarRobotNR:
             vxi = xi.diff(t)
             vyi = yi.diff(t)
 
-            xC.append(xi)
-            yC.append(yi)
-            v_c_sq.append(vxi**2 + vyi**2)
+            pos_x.append(xi)
+            pos_y.append(yi)
+            vC_sq.append(vxi**2 + vyi**2)
 
-        return xC, yC, v_c_sq
+        return pos_x, pos_y, vC_sq
 
-    def build_model(self):
-        n = len(self.links['l'])
+    def _build_model(self):
+        n = self._n_links
         t = sp.Symbol('t')
 
         # Generalized coordinates and their derivatives
@@ -332,18 +388,16 @@ class PlanarRobotNR:
         inertia = [1 / 3 * m[i] * l[i] ** 2 for i in range(n)]
 
         # Center of mass positions and velocities
-        xC, yC, v_c_sq = self.compute_x_u_v(q, l, t)
+        pos_x, pos_y, vC_sq = self._compute_forward_kinematics(q, l, t)
 
         # Kinetic energy (translational + rotational)
         T = sum(
-            0.5
-            * m[i]
-            * v_c_sq[i]  # + 0.5 * inertia[i] * sum(dq[: i + 1]) ** 2
+            0.5 * m[i] * vC_sq[i]  # + 0.5 * inertia[i] * sum(dq[: i + 1]) ** 2
             for i in range(n)
         )
 
         # Potential energy
-        V = sum(m[i] * g * yC[i] for i in range(n))
+        V = sum(m[i] * g * pos_y[i] for i in range(n))
 
         # Lagrangian
         L = T - V
@@ -378,8 +432,8 @@ class PlanarRobotNR:
             list(b),
             L,
             tau,
-            Matrix(xC),
-            Matrix(yC),
+            Matrix(pos_x),
+            Matrix(pos_y),
         )
 
     def extract_M_C_G(self, eqs, q_sym, dq_sym, ddq_sym):
@@ -455,7 +509,7 @@ class PlanarRobotNR:
         Generate a numerical function to compute joint torques tau from q, dq, ddq.
 
         Parameters:
-            eqs: list of sympy Eq (from build_model)
+            eqs: list of sympy Eq (from _build_model)
             q_sym: list of sympy symbols/functions for q
             dq_sym: list of sympy expressions for dq
             ddq_sym: list of sympy expressions for ddq
@@ -525,17 +579,46 @@ class PlanarRobotNR:
         M_val = self.m_mat_func(*q, *m, *l, *b).reshape((-1, 1))
         C_val = self.c_mat_func(*q, *dq, *m, *l, *b).reshape((-1, 1))
         G_val = self.g_mat_func(*q, *m, *l, *b).reshape((-1, 1))
-        xC_val = self.xC_func(*q, *m, *l, *b)
-        yC_val = self.yC_func(*q, *m, *l, *b)
+        pos_x_val = self.pos_x_func(*q, *m, *l, *b)
+        pos_y_val = self.pos_y_func(*q, *m, *l, *b)
 
         ddq = np.linalg.pinv(M_val) @ (tau - C_val - G_val)
-        return np.concatenate([dq, ddq]), xC_val, yC_val
+        return np.concatenate([dq, ddq]), pos_x_val, pos_y_val
+
+    def compute_work_space(self, resolution: int):
+        grids = [
+            np.linspace(0, 2 * np.pi, resolution) for _ in range(self._n_links)
+        ]
+
+        x_ends, y_ends = [], []
+        for q in product(*grids):
+            x = y = 0
+            total_angle = 0.0
+            # TODO: Use forward kinematics
+            for i in range(self._n_links):
+                total_angle += q[i]
+                x += self._links['l'][i] * np.cos(total_angle)
+                y += self._links['l'][i] * np.sin(total_angle)
+            x_ends.append(x)
+            y_ends.append(y)
+
+        # Plot
+        plt.figure(figsize=(3, 3))
+        plt.scatter(x_ends, y_ends, s=0.5, alpha=0.5)
+        plt.gca().set_aspect('equal')
+        plt.title(f'{self._n_links}-Link Planar Robot Workspace')
+        plt.xlabel('X')
+        plt.ylabel('Y')
+        plt.grid(True)
+        plt.show()
+
+        return np.column_stack((x_ends, y_ends))
 
 
 def animate_all(
     t_vals,
-    xC_log,
-    yC_log,
+    pos_x_log,
+    pos_y_log,
     x_log,
     u_log,
     tau_log,
@@ -545,7 +628,7 @@ def animate_all(
     interval=5,
     save_path=None,
 ):
-    T, n = xC_log.shape
+    T, n = pos_x_log.shape
 
     fig = plt.figure(figsize=(12, 6))
     spec = gridspec.GridSpec(
@@ -634,13 +717,13 @@ def animate_all(
 
     def update(frame):
         # Forward kinematics
-        xs = [0, *list(xC_log[frame])]
-        ys = [0, *list(yC_log[frame])]
+        xs = [0, *list(pos_x_log[frame])]
+        ys = [0, *list(pos_y_log[frame])]
         link_line.set_data(xs, ys)
 
         for i in range(n):
-            traj_x[i].append(xC_log[frame, i])
-            traj_y[i].append(yC_log[frame, i])
+            traj_x[i].append(pos_x_log[frame, i])
+            traj_y[i].append(pos_y_log[frame, i])
             traj_lines[i].set_data(traj_x[i], traj_y[i])
 
         for i in range(n_joints):
@@ -677,6 +760,29 @@ def animate_all(
     return HTML(ani.to_jshtml())
 
 
+def draw_apple(ax, x=0, y=0, zoom=0.068, rotation=0.0):
+    """
+    Places a rotated apple image at position (x, y) in the plot.
+    """
+    # Load and rotate the image
+    image_path = Path(__file__).parent / 'apple.png'
+
+    img = mpimg.imread(image_path)
+
+    # Rotate the image (angle in degrees, reshape keeps original size)
+    rotated_img = rotate(img, angle=rotation, reshape=True, mode='nearest')
+
+    # Clip to valid float RGB range
+    rotated_img = np.clip(rotated_img, 0.0, 1.0)
+
+    # Create OffsetImage
+    imagebox = OffsetImage(rotated_img, zoom=zoom)
+    ab = AnnotationBbox(imagebox, (x, y), frameon=False)
+    ax.add_artist(ab)
+
+    return ax
+
+
 def plot_ax(robot):
     fig = plt.figure(figsize=(12, 6))
     spec = gridspec.GridSpec(
@@ -689,6 +795,7 @@ def plot_ax(robot):
 
     # --- Subplot 1: Forward Kinematics
     ax0 = fig.add_subplot(spec[:, 0])
+    ax0 = draw_apple(ax0)
     ax0.set_xlim(-2.5, 2.5)
     ax0.set_ylim(-2.5, 2.5)
     ax0.set_aspect('equal')
