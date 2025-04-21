@@ -1,4 +1,7 @@
+
 # Robot Analysis
+
+NOTE: Please check my blog for tutorials and illustration with this package: [https://expred.co/robotics](https://expred.co/robotics).
 
 This project aims to simulate the kinematics and dynamics of robot arms with different controllers. Currently, the project support analysis on *planar open-chain robots* with N revolut joints. We assume that the links' mass are placed at the joints.
 
@@ -51,21 +54,3 @@ For example, with a stepper motor, we can control the robot simply by applying o
 a common approach in small robotic arm projects.  
 However, this method may introduce inaccuracies when the motor's torque is insufficient  
 (see [`demo1_stepper_motor_case.ipynb`](notebooks/demo1_stepper_motor_case.ipynb)).
-
-``` python
-control_method = {
-    'method':'openloop',
-    't1': 0.5,
-    't2':1.5,
-    'tf': 2,
-    'theta_d': np.array([ np.pi/6]),
-    'tau_max': 20.
-}
-data = robot.simulate(
-    x0=np.array([0.0, 0.0]),
-    **control_method
-)
-
-error = ( 1-data['x_log'][-1,0]/control_method['theta_d'])*100
-plot_final(error=error, theta_d = control_method['theta_d'], tau_max=control_method['tau_max'], **data)
-```
